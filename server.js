@@ -60,54 +60,51 @@ app.post("/roblox/donation", async (req, res) => {
 // GET /roblox/leaderboard?scope=global|universe|place&universeId=...&placeId=...&limit=10&month=YYYY-MM
 app.get("/roblox/leaderboard", async (req, res) => {
   try {
-    if (req.get("X-Api-Key") !== API_KEY) {
-      return res.status(401).json({ ok: false, error: "bad_api_key" });
-    }
+    if (req.get("X-Api-Key") !== API_KEY) return res.status(401).json({ ok: false });
 
-    const scope = String(req.query.scope || "global"); // global | universe | place
-    const limit = Math.max(1, Math.min(Number(req.query.limit) || 10, 100));
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 100);
+    const scope = (req.query.scope || "global").toLowerCase();
+    const month = req.query.month || null;
 
-    const universeId = Number(req.query.universeId);
-    const placeId = Number(req.query.placeId);
-    const month = String(req.query.month || ""); // "2026-02"
+    let q = supabase
+      .from("donations")
+      .select("user_id, username, amount, ts, universe_id, place_id");
 
-    let q = supabase.from("donations").select("user_id, username, amount, universe_id, place_id, ts");
-
-    if (scope === "universe" && Number.isFinite(universeId)) q = q.eq("universe_id", universeId);
-    if (scope === "place" && Number.isFinite(placeId)) q = q.eq("place_id", placeId);
-
-    if (month && /^\d{4}-\d{2}$/.test(month)) {
-      const start = new Date(`${month}-01T00:00:00Z`).getTime() / 1000;
+    if (month) {
+      const start = `${month}-01T00:00:00Z`;
       const endDate = new Date(`${month}-01T00:00:00Z`);
       endDate.setUTCMonth(endDate.getUTCMonth() + 1);
-      const end = endDate.getTime() / 1000;
-
-      q = q.gte("ts", Math.floor(start)).lt("ts", Math.floor(end));
+      const end = endDate.toISOString();
+      q = q.gte("ts", Math.floor(new Date(start).getTime() / 1000)).lt("ts", Math.floor(new Date(end).getTime() / 1000));
     }
+
+    if (scope === "universe" && req.query.universeId) q = q.eq("universe_id", Number(req.query.universeId));
+    if (scope === "place" && req.query.placeId) q = q.eq("place_id", Number(req.query.placeId));
 
     const { data, error } = await q;
     if (error) {
-      console.error("select error:", error);
-      return res.status(500).json({ ok: false, error: "select_failed" });
+      console.error(error);
+      return res.status(500).json({ ok: false });
     }
 
-    const totals = new Map();
+    const map = new Map();
     for (const row of data || []) {
-      const uid = row.user_id;
-      const prev = totals.get(uid) || { userId: uid, username: row.username, total: 0 };
-      prev.total += Number(row.amount) || 0;
-      if (row.username) prev.username = row.username;
-      totals.set(uid, prev);
+      const id = Number(row.user_id);
+      if (!id) continue;
+      const cur = map.get(id) || { userId: id, username: row.username || "", amount: 0 };
+      cur.amount += Number(row.amount || 0);
+      if (!cur.username && row.username) cur.username = row.username;
+      map.set(id, cur);
     }
 
-    const rows = Array.from(totals.values())
-      .sort((a, b) => (b.total || 0) - (a.total || 0))
+    const rows = Array.from(map.values())
+      .sort((a, b) => (b.amount || 0) - (a.amount || 0))
       .slice(0, limit);
 
-    return res.json({ ok: true, scope, universeId, placeId, month: month || null, rows });
-  } catch (e) {
-    console.error("leaderboard exception:", e);
-    return res.status(500).json({ ok: false, error: "server_exception" });
+    return res.json({ ok: true, rows });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ ok: false });
   }
 });
 
